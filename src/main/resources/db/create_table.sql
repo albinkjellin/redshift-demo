@@ -1,0 +1,1 @@
+CREATE TABLE contacts (id varchar(255) NOT NULL, firstname varchar(255), lastname varchar(255), PRIMARY KEY (id));

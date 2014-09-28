@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:file="http://www.mulesoft.org/schema/mule/file" xmlns:s3="http://www.mulesoft.org/schema/mule/s3" xmlns:data-mapper="http://www.mulesoft.org/schema/mule/ee/data-mapper" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:batch="http://www.mulesoft.org/schema/mule/batch"
+	xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" version="EE-3.5.1"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/data-mapper http://www.mulesoft.org/schema/mule/ee/data-mapper/current/mule-data-mapper.xsd
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd
+http://www.mulesoft.org/schema/mule/s3 http://www.mulesoft.org/schema/mule/s3/current/mule-s3.xsd">
+    <data-mapper:config name="List_Map__To_CSV" transformationGraphPath="list_map__to_csv.grf" doc:name="List_Map__To_CSV"/>
+    
+	<batch:job name="direct.insert">
+        <batch:threading-profile poolExhaustedAction="WAIT"/>
+		<batch:input>
+            <http:inbound-endpoint exchange-pattern="one-way" host="localhost" port="${http.port}" path="insert" doc:name="insert"/>
+			<db:select config-ref="MySQL"  doc:name="GetDataFrom MySQL" streaming="true">
+                <db:parameterized-query><![CDATA[select * from contacts;]]></db:parameterized-query>
+			</db:select>
+		</batch:input>
+		<batch:process-records>
+			<batch:step name="Batch_Step">
+                
+                <batch:commit doc:name="Batch Commit" streaming="true">
+                    <db:insert config-ref="PostgreSQL" bulkMode="true" doc:name="Insert into Postgresql">
+                        <db:parameterized-query><![CDATA[insert into contacts values(#[payload.id], #[payload.firstname], #[payload.lastname]);]]></db:parameterized-query>
+                    </db:insert>
+                </batch:commit>
+                <logger message="After Insert #[payload]" level="INFO" doc:name="Logger"/>
+			</batch:step>
+		</batch:process-records>
+		<batch:on-complete>
+			<logger
+				message="#[payload.loadedRecords] Loaded Records #[payload.failedRecords], Failed Records"
+				level="INFO" doc:name="Log Batch Result" />
+		</batch:on-complete>
+	</batch:job>
+    <batch:job name="s3.copy.insert">
+        <batch:threading-profile poolExhaustedAction="WAIT"/>
+        <batch:input>
+            <http:inbound-endpoint exchange-pattern="one-way" host="localhost" port="${http.port}" path="copy" doc:name="copy"/>
+            <db:select config-ref="MySQL"  doc:name="GetDataFrom MySQL" streaming="true">
+                <db:parameterized-query><![CDATA[select * from contacts;]]></db:parameterized-query>
+			</db:select>
+        </batch:input>
+        <batch:process-records>
+            <batch:step name="streaming.insert">
+                <batch:commit streaming="true" doc:name="streaming.commit">
+                    <data-mapper:transform config-ref="List_Map__To_CSV" doc:name="List&lt;Map&gt; To CSV"/>
+                    <set-variable  doc:name="Generate Filename" value="file.#[server.dateTime.format('yyyy-MM-dd hh:mm:ss')].csv" variableName="filename"/>
+                    <s3:create-object config-ref="Amazon_S3" bucketName="ms-rs" key="#[filename]" doc:name="Upload CSV"/>
+                    <db:bulk-execute config-ref="PostgreSQL" doc:name="Initiate Copy Command"><![CDATA[copy contacts from 's3://ms-rs/file' credentials 'aws_access_key_id=${aws.access.key};aws_secret_access_key=${aws.secret.key}' delimiter ',';]]></db:bulk-execute>
+                    
+                    <s3:delete-object config-ref="Amazon_S3" bucketName="ms-rs" key="#[filename]" doc:name="Delete Temp File"/>
+                </batch:commit>
+            </batch:step>
+        </batch:process-records>
+        <batch:on-complete>
+			<logger
+				message="#[payload.loadedRecords] Loaded Records #[payload.failedRecords], Failed Records"
+				level="INFO" doc:name="Log Batch Result" />
+		</batch:on-complete>
+    </batch:job>
+</mule>
